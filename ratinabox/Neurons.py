@@ -942,6 +942,119 @@ class PlaceCells(Neurons):
         return
 
 
+class DriftingPlaceCells(PlaceCells):
+    '''
+        Class extending PlaceCells to allow for drifting place fields. Drift is modeled with variable speed and rotational velocity governed by Ornstein-Uhlenbeck process similar to Agent.
+    '''
+    default_params = {
+        "n": 50,
+        "name": "DriftingPlaceCells",
+        "description": "gaussian",
+        "widths": 0.1,  # the radii
+        "place_cell_centres": None,  # if given this will overwrite 'n',
+        "wall_geometry": "geodesic",
+        "min_fr": 0,
+        "max_fr": 10,
+        "name": "DriftingPlaceCells",
+        "drift_speed_mean": 0.01, # Mean speed of PF drift (in environment units per second)
+        "drift_speed_coherence_time":100,
+        "drift_rotational_velocity_coherence_time": 0.08,
+        "drift_rotational_velocity_std": 0,
+        "update_every_n_steps": 1,  # how often to update the place fields
+        "boundary_handling": "bounce",  # 'bounce' or 'ignore' for now
+    }
+    
+    def __init__(self, Agent, params={}):
+    
+        parameters = copy.deepcopy(__class__.default_params)
+        parameters.update(params)
+
+        # ---- Broadcast parameters ----
+        for key in ["drift_speed_mean", "drift_speed_coherence_time", "drift_rotational_velocity_coherence_time", "drift_rotational_velocity_std"]:
+            if not hasattr(parameters[key], '__iter__'):
+                parameters[key] = np.array([parameters[key]] * parameters['n'])
+
+        super().__init__(Agent, params=parameters)
+
+        # ---- Initialize history dataframe for place field centers ----
+        self.step_counter = 0
+        self.history['place_cell_centres'] = []
+
+        # ---- Initialize starting drift velocities ----
+        self.drift_directions = np.random.uniform(0, 2 * np.pi,size=self.n)
+        self.drift_velocities = (self.drift_speed_mean * np.array([np.cos(self.drift_directions), np.sin(self.drift_directions)])).T
+        self.drift_rotational_velocities = np.zeros(self.n)
+
+
+    def drift_step(self): 
+        '''Drifts the place fields according to the drift strategy'''
+        dt = self.Agent.dt
+        for i in range(self.n): # Loop over place cells
+
+            # ---- 1) Stochastically update the direction ----
+            self.drift_rotational_velocities[i] += ratinabox.utils.ornstein_uhlenbeck(
+                dt=dt,
+                x=self.drift_rotational_velocities[i],
+                drift=0,
+                noise_scale=self.drift_rotational_velocity_std[i],
+                coherence_time=self.drift_rotational_velocity_coherence_time[i]
+            )
+            dtheta = self.drift_rotational_velocities[i] * dt
+            self.drift_velocities[i] = ratinabox.utils.rotate(self.drift_velocities[i], dtheta)
+
+            # ---- 2) Stochastically update the speed ----
+            speed = np.linalg.norm(self.drift_velocities[i])
+            if speed == 0:  # add tiny velocity in [1,0] direction to avoid nans
+                self.drift_velocities[i], speed = 1e-9 * np.array([1, 0]), 1e-9
+
+            normal_variable = ratinabox.utils.rayleigh_to_normal(speed, sigma=self.drift_speed_mean[i])
+            new_normal_variable = normal_variable + ratinabox.utils.ornstein_uhlenbeck(
+                dt=dt,
+                x=normal_variable,
+                drift=0,
+                noise_scale=1,
+                coherence_time=self.drift_speed_coherence_time[i],
+            )
+            speed_new = ratinabox.utils.normal_to_rayleigh(
+                new_normal_variable, sigma=self.drift_speed_mean[i]
+            )
+            self.drift_velocities[i] = (speed_new / speed) * self.drift_velocities[i]
+
+            # ---- 3) Update the place cell center ----
+            proposed_place_cell_center = self.place_cell_centres[i] + self.drift_velocities[i] * dt
+            if self.boundary_handling=='ignore':
+                 # If we ignore the boundaries, we just set the new place cell center to the proposed one (could be outside the environment)
+                 self.place_cell_centres[i] = proposed_place_cell_center
+
+            elif self.boundary_handling=='bounce':
+                proposed_drift_step = np.array([self.place_cell_centres[i], proposed_place_cell_center])
+                wall_check = self.Agent.Environment.check_wall_collisions(proposed_drift_step)
+                walls = wall_check[0]
+                wall_collisions = wall_check[1]
+
+                if (wall_collisions is None) or (True not in wall_collisions):
+                    self.place_cell_centres[i] = proposed_place_cell_center # If there is no wall collision, we just set the new place cell center to the proposed one
+
+                elif True in wall_collisions: # If there is a wall collision, we bounce off the wall
+                    colliding_wall = walls[np.argwhere(wall_collisions == True)[0][0]]
+                    self.drift_velocities[i] = ratinabox.utils.wall_bounce(self.drift_velocities[i], colliding_wall)
+                    self.place_cell_centres[i] += self.drift_velocities[i]*dt
+
+                if self.Agent.Environment.check_if_position_is_in_environment(self.place_cell_centres[i]) is False: # Checking for environment boundaries
+                    self.place_cell_centres[i] = self.Agent.Environment.apply_boundary_conditions(self.place_cell_centres[i])
+        
+
+    def update(self):
+        '''Updates the place fields'''
+        
+        if self.step_counter % self.update_every_n_steps == 0:
+            self.drift_step()
+            self.history['place_cell_centres'].append(copy.deepcopy(self.place_cell_centres))
+
+        self.step_counter+=1
+        #todo: If necessary save drift velocities and rotational velocities to history
+        super().update()
+
 class GridCells(Neurons):
     """The GridCells class defines a population of 'n' grid cells with orientations, grid scales and offsets (these can be set randomly or non-randomly). Grids are modelled as the rectified or shifted sum of three cosine waves at 60 degrees to each other.
 
