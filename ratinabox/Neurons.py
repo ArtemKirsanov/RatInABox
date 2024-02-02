@@ -613,7 +613,7 @@ class Neurons:
         cell_spikes = np.random.uniform(0, 1, size=(self.n,)) < (
             self.Agent.dt * self.firingrate
         )
-        self.history["t"].append(self.Agent.t)
+        self.history["t"].append(np.round(self.Agent.t, self.Agent.dt_rounding_precision))
         self.history["firingrate"].append(list(self.firingrate))
         self.history["spikes"].append(list(cell_spikes))
 
@@ -888,7 +888,7 @@ class PlaceCells(Neurons):
             firingrate = 1 * (dist < self.widths)
 
         firingrate = (
-            firingrate * (self.max_fr - self.min_fr) + self.min_fr
+            firingrate.reshape(-1) * (self.max_fr - self.min_fr).reshape(-1) + self.min_fr
         )  # scales from being between [0,1] to [min_fr, max_fr]
         return firingrate
 
@@ -1021,7 +1021,7 @@ class DriftingPlaceCells(PlaceCells):
             self.drift_velocities[i] = (speed_new / speed) * self.drift_velocities[i]
 
             # ---- 3) Update the place cell center ----
-            proposed_place_cell_center = self.place_cell_centres[i] + self.drift_velocities[i] * dt
+            proposed_place_cell_center = self.place_cell_centres[i] + self.drift_velocities[i] * dt * self.update_every_n_steps
             if self.boundary_handling=='ignore':
                  # If we ignore the boundaries, we just set the new place cell center to the proposed one (could be outside the environment)
                  self.place_cell_centres[i] = proposed_place_cell_center
@@ -1038,7 +1038,7 @@ class DriftingPlaceCells(PlaceCells):
                 elif True in wall_collisions: # If there is a wall collision, we bounce off the wall
                     colliding_wall = walls[np.argwhere(wall_collisions == True)[0][0]]
                     self.drift_velocities[i] = ratinabox.utils.wall_bounce(self.drift_velocities[i], colliding_wall)
-                    self.place_cell_centres[i] += self.drift_velocities[i]*dt
+                    self.place_cell_centres[i] += self.drift_velocities[i]*dt * self.update_every_n_steps
 
                 if self.Agent.Environment.check_if_position_is_in_environment(self.place_cell_centres[i]) is False: # Checking for environment boundaries
                     self.place_cell_centres[i] = self.Agent.Environment.apply_boundary_conditions(self.place_cell_centres[i])
@@ -1049,9 +1049,9 @@ class DriftingPlaceCells(PlaceCells):
         
         if self.step_counter % self.update_every_n_steps == 0:
             self.drift_step()
-            self.history['place_cell_centres'].append(copy.deepcopy(self.place_cell_centres))
-
+            
         self.step_counter+=1
+        self.history['place_cell_centres'].append(copy.deepcopy(self.place_cell_centres))
         #todo: If necessary save drift velocities and rotational velocities to history
         super().update()
 

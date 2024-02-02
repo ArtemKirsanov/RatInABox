@@ -111,6 +111,7 @@ class Agent:
 
         # time and runID
         self.t = 0
+        self.dt_rounding_precision = int(np.ceil(np.log10(1/self.dt))+1) #this is used to round the time to the nearest dt when saving to history
         self.distance_travelled = 0
         self.average_measured_speed = max(self.speed_mean, self.speed_std)
         self.use_imported_trajectory = False
@@ -491,7 +492,7 @@ class Agent:
             self.head_direction = self.head_direction / np.linalg.norm(self.head_direction)
 
     def save_to_history(self):
-        self.history["t"].append(self.t)
+        self.history["t"].append(np.round(self.t, self.dt_rounding_precision))
         self.history["pos"].append(list(self.pos))
         self.history["vel"].append(list(self.save_velocity))
         self.history["head_direction"].append(list(self.head_direction))
